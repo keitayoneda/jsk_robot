@@ -51,7 +51,7 @@
    (prog1
        (send-super* :init :robot spot-robot :base-frame-id "base_link" :odom-topic "/odom_combined" :base-controller-action-name nil args)
      ;; check if spot_ros/driver.launch started
-     (unless (ros::wait-for-service "/spot/claim" 5)
+     (unless (or (send self :simulation-modep) (ros::wait-for-service "/spot/claim" 5))
        (ros::ros-error "could not communicate with robot, may be forget to roslaunch spot_driver driver.launch, or did not power on the robot"))
      ;; http://www.clearpathrobotics.com/assets/guides/melodic/spot-ros/ros_usage.html#view-the-robot
      ;; spot_msgs version 0.0.0
@@ -315,10 +315,11 @@
   (:estop-hard () (call-trigger-service "/spot/estop/hard"))
   (:claim ()
    "Claim the robot control"
-   (let ((client (send self :state :leases-body-client-name)))
-     (if (or (null client) (string= client ""))
-	 (call-trigger-service "/spot/claim")
-       (ros::ros-warn "robot is already claimed by ~A" client))))
+   (if (not (send self :simulation-modep))
+     (let ((client (send self :state :leases-body-client-name)))
+       (if (or (null client) (string= client ""))
+	   (call-trigger-service "/spot/claim")
+         (ros::ros-warn "robot is already claimed by ~A" client)))))
   (:release () "Relase the robot control" (call-trigger-service "/spot/release"))
   (:power-on () "Power on the robot" (call-trigger-service "/spot/power_on"))
   (:power-off
@@ -523,7 +524,8 @@
   (ros::spin-once)
   (send *ri* :spin-once)
   (send *ri* :claim)
-  (while (member (send *ri* :state :power-state-motor-power-state) (list 'off nil))
+  (while (and (not (send *ri* :simulation-modep))
+              (member (send *ri* :state :power-state-motor-power-state) (list 'off nil)))
     (unix::sleep 1)
     (ros::ros-info "powering on...")
     (send *ri* :power-on))
