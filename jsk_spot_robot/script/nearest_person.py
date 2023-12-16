@@ -11,16 +11,21 @@ import sys
 class RelativeTfConverter:
     def __init__(self):
         rospy.init_node("rel_tf_node")
-
+        #tfを保存するためのtf_buffer
         self.tf_buffer = tf2_ros.Buffer(rospy.Duration(100))
+        #tfをsubscribeするためのtf_listener
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
+        # tfをpublishするためのtf_buffer
         self.broadcaster = tf2_ros.TransformBroadcaster()
+        # bbox_arrayをsubscribe
         rospy.Subscriber("/spot_recognition/bbox_array", BoundingBoxArray, self.callback)
-
+        # /nearest_personというtopicに追従したい人のtfをpublishする
         self.pub = rospy.Publisher("/nearest_person", PoseStamped)
+
         rospy.spin()
 
     def cvtBox2PoseStamped(self, box):
+        # BoundingBoxArrayをPoseStampedに変換する関数
         original_pose_stamped = PoseStamped()
         original_pose_stamped.header = box.header
         original_pose_stamped.pose = box.pose
@@ -29,8 +34,11 @@ class RelativeTfConverter:
     
     def callback(self, msg:BoundingBoxArray):
         try:
+            # msgの座標系のid(原点が73B2から見て約-26m下にある)
             from_id = "odom"
+            # 変換したい座標系のid(原点はspotのbody中心)
             target_id = "body"
+            # from->targetへのtfの変換を表す変数
             transform = self.tf_buffer.lookup_transform(target_id, from_id, rospy.Time(0), rospy.Duration(1.0))
             
             if len(msg.boxes) > 0:
@@ -38,12 +46,15 @@ class RelativeTfConverter:
                 self.nearest_distance = 1e10
                 self.updated = False
                 for i, box in enumerate(msg.boxes):
+                    # msg.boxesに含まれるboxを一つづつPoseStampedに変換する
                     pose_stamped = self.cvtBox2PoseStamped(box)
+                    # 座標をspot原点に変換する
                     pose_transformed = tf2_geometry_msgs.do_transform_pose(pose_stamped, transform)
-                    # print(f"detected_{i}: {pose_transformed}")
+                    # spotからの距離
                     distance = (pose_transformed.pose.position.x**2 + pose_transformed.pose.position.y**2+ pose_transformed.pose.position.z**2)**0.5
                     # print(f"id={i}, pos={pose_transformed.pose.position}")
                     if (distance < self.nearest_distance and pose_transformed.pose.position.x < 0 and abs(pose_transformed.pose.position.y) < 2):
+                        # x座標が負かつy方向に2m以内の人で距離が最も近い人を追従対象にする
                         self.nearest_distance = distance
                         self.nearest_pose_stamped= pose_transformed
                         self.updated = True
