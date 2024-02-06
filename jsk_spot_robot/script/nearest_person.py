@@ -7,6 +7,7 @@ import numpy as np
 import time
 import threading
 
+# 描画用
 import pyglet
 
 window = pyglet.window.Window(800, 600, caption="estimated pos")
@@ -21,6 +22,7 @@ def on_draw():
     window.clear()
     batch.draw()
 
+# 描画のスレッド
 viz_thread = threading.Thread(target=lambda:pyglet.app.run())
 viz_thread.start()
 
@@ -57,7 +59,7 @@ class KalmanFilter:
         self.is_state_initialized = False
         self.cov = cov_init
         self.A:np.ndarray = np.eye(4)
-        self.C:np.ndarray = np.block([np.eye(2), np.eye(2)*0.0])
+        self.C:np.ndarray = np.eye(4)
         self.Q = Q
         self.R = R
         self.last_updated_time = time.time()
@@ -70,7 +72,12 @@ class KalmanFilter:
         else:
             pass
 
-    def update(self, x_obs, y_obs):
+    def update(self, x_obs, y_obs, vel_obs_x=0.0, vel_obs_y=0.0):
+        abs_vel =(vel_obs_x**2+vel_obs_y**2)**0.5 
+        vel_max = 2.0
+        if (abs_vel > vel_max):
+            vel_obs_x /= abs_vel * vel_max
+            vel_obs_y /= abs_vel * vel_max
         updated_time = time.time()
         delta_t = min(updated_time - self.last_updated_time, 0.5)
         identity = np.eye(2)
@@ -80,11 +87,12 @@ class KalmanFilter:
         self.state = self.A@self.state
         self.cov = self.A*self.cov * self.A.T + self.Q
 
-        self.obs = np.array([[x_obs], [y_obs]])
+        self.obs = np.array([[x_obs], [y_obs], [vel_obs_x], [vel_obs_y]])
         self.obs_pred = self.C @ self.state
         self.delta_obs = (self.obs - self.obs_pred)
         self.cov_obs = self.C @ self.cov @ self.C.T + self.R
         self.kalman_gain = self.cov@self.C.T@np.linalg.inv((self.cov_obs + self.C@self.cov@self.C.T))
+        print(f"kalman_gain:{self.kalman_gain}")
         self.state = self.state + self.kalman_gain@self.delta_obs
         self.cov = (np.eye(4) - self.kalman_gain@self.C)@self.cov
         print(f"estimated_state:{self.state}")
@@ -105,7 +113,8 @@ class RelativeTfConverter:
         # bbox_arrayをsubscribe
         rospy.Subscriber("/spot_recognition/bbox_array", BoundingBoxArray, self.callback)
         # /nearest_personというtopicに追従したい人のtfをpublishする
-        self.pub = rospy.Publisher("/nearest_person", PoseStamped, queue_size=10)
+        self.pub1 = rospy.Publisher("/dest_pos_vel", PoseArray, queue_size=10)
+        self.pub2 = rospy.Publisher("/nearest_person", PoseStamped, queue_size=10)
 
         # x方向のPIレギュレータ
         self.x_PI_regulator = PIRegulator(1.0, 0.0, 5)
@@ -130,7 +139,7 @@ class RelativeTfConverter:
         # 更新プロセスでの共分散行列
         Q = np.diag([0.04, 0.04, 0.001, 0.001])
         # 観測プロセスでの共分散行列
-        R = np.diag([0.03, 0.03])
+        R = np.diag([0.03, 0.03, 1.0, 1.0])
         # カルマンフィルタ
         self.kalman_filter = KalmanFilter(init_cov, Q, R)
         # 5Hzで回るはず?
@@ -142,7 +151,7 @@ class RelativeTfConverter:
         self.center_axis_x = pyglet.shapes.Line(offset_x, offset_y, offset_x+50, offset_y, color=(255, 0, 0), batch=batch)
         self.center_axis_y = pyglet.shapes.Line(offset_x, offset_y, offset_x, offset_y+50, color=(0, 255, 0), batch=batch)
         self.vel = pyglet.shapes.Line(offset_x, offset_y, offset_x, offset_y, color=(0,0,255), batch=batch)
-        self.viz_scale = 50
+        self.viz_scale = 70
         rospy.spin()
 
     def cvtBox2PoseStamped(self, box):
@@ -190,7 +199,7 @@ class RelativeTfConverter:
                     init_state = np.array([[self.nearest_pose_stamped_from_odom.pose.position.x], [self.nearest_pose_stamped_from_odom.pose.position.y], [0], [0]])
                     self.kalman_filter.initState(init_state)
                 else:
-                    self.kalman_filter.update(self.nearest_pose_stamped_from_odom.pose.position.x, self.nearest_pose_stamped_from_odom.pose.position.y)
+                    self.kalman_filter.update(self.nearest_pose_stamped_from_odom.pose.position.x, self.nearest_pose_stamped_from_odom.pose.position.y, float(self.nearest_pose_stamped_from_odom.pose.position.x - self.kalman_filter.state[0])/self.delta_t, float(self.nearest_pose_stamped_from_odom.pose.position.y - self.kalman_filter.state[1])/self.delta_t)
                     pass
 
                 # 目指すべき場所
@@ -203,9 +212,10 @@ class RelativeTfConverter:
 
                 vel_from_odom = PoseStamped()
                 vel_from_odom.header = self.nearest_pose_stamped_from_odom.header
-                vel_from_odom.pose.position.x = (dest_pos_from_odom.pose.position.x - self.pre_dest_pos_from_odom.pose.position.x)/self.delta_t + transform_to_odom.transform.translation.x
-                vel_from_odom.pose.position.y = (dest_pos_from_odom.pose.position.y - self.pre_dest_pos_from_odom.pose.position.y)/self.delta_t + transform_to_odom.transform.translation.y
-
+                # vel_from_odom.pose.position.x = (dest_pos_from_odom.pose.position.x - self.pre_dest_pos_from_odom.pose.position.x)/self.delta_t + transform_to_odom.transform.translation.x
+                # vel_from_odom.pose.position.y = (dest_pos_from_odom.pose.position.y - self.pre_dest_pos_from_odom.pose.position.y)/self.delta_t + transform_to_odom.transform.translation.y
+                vel_from_odom.pose.position.x = self.kalman_filter.state[2]+ transform_to_odom.transform.translation.x
+                vel_from_odom.pose.position.y = self.kalman_filter.state[3]+ transform_to_odom.transform.translation.y
                 self.pre_dest_pos_from_odom = dest_pos_from_odom
 
                 # odom視点のものをspot(body)視点にする
@@ -224,22 +234,13 @@ class RelativeTfConverter:
                 self.send_pose_array.poses.append(pos)
                 self.send_pose_array.poses.append(vel)
 
-                #描画
-                self.observed_circle.x = self.nearest_pose_stamped_from_spot.pose.position.x*self.viz_scale + offset_x
-                self.observed_circle.y = self.nearest_pose_stamped_from_spot.pose.position.y*self.viz_scale + offset_y
-                self.estimated_circle.x = self.dest_pos_from_spot.pose.position.x*self.viz_scale+offset_x
-                self.estimated_circle.y = self.dest_pos_from_spot.pose.position.y*self.viz_scale+offset_y
-                self.estimated_circle.radius = (min(self.kalman_filter.cov[0,0], self.kalman_filter.cov[1,1])**0.5)*self.viz_scale
+                self.pub1.publish(self.send_pose_array)
 
-                self.vel.x = self.dest_pos_from_spot.pose.position.x
-                self.vel.y = self.dest_pos_from_spot.pose.position.y
-                self.vel.x2 = self.dest_pos_from_spot.pose.position.x + vel_from_spot.pose.position.x
-                self.vel.y2 = self.dest_pos_from_spot.pose.position.y + vel_from_spot.pose.position.y
                 print("==dest_pos==")
                 print(self.dest_pos_from_spot.pose.position)
 
 
-                self.pub.publish(self.dest_pos_from_spot)
+                self.pub2.publish(self.dest_pos_from_spot)
 
                 # 認識した人の位置をtfにpublishする
                 position = self.nearest_pose_stamped_from_spot.pose.position
@@ -256,6 +257,18 @@ class RelativeTfConverter:
                 t.transform.rotation.z = orientation.z
                 t.transform.rotation.w = orientation.w
                 self.broadcaster.sendTransform(t)
+
+                #描画用の情報セット
+                self.observed_circle.x = self.nearest_pose_stamped_from_spot.pose.position.x*self.viz_scale + offset_x
+                self.observed_circle.y = self.nearest_pose_stamped_from_spot.pose.position.y*self.viz_scale + offset_y
+                self.estimated_circle.x = self.dest_pos_from_spot.pose.position.x*self.viz_scale+offset_x
+                self.estimated_circle.y = self.dest_pos_from_spot.pose.position.y*self.viz_scale+offset_y
+                self.estimated_circle.radius = (min(self.kalman_filter.cov[0,0], self.kalman_filter.cov[1,1])**0.5)*self.viz_scale
+
+                self.vel.x = self.dest_pos_from_spot.pose.position.x*self.viz_scale+offset_x
+                self.vel.y = self.dest_pos_from_spot.pose.position.y*self.viz_scale+offset_y
+                self.vel.x2 = self.vel.x + vel_from_spot.pose.position.x*self.viz_scale
+                self.vel.y2 = self.vel.y + vel_from_spot.pose.position.y*self.viz_scale
 
                 # 指定した周期で回るはず
                 self.rate.sleep()
