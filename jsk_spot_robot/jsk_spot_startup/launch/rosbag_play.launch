@@ -9,6 +9,8 @@
     <arg name="duration_time" default="0" />
     <arg name="duration" default="--duration $(arg duration_time)" if="$(eval duration_time != 0)" />
     <arg name="duration" default="" if="$(eval duration_time == 0)" />
+<arg name="manager" default="rosbag_play_nodelet_manager" />
+<node pkg="nodelet" type="nodelet" name="$(arg manager)" args="manager" output="screen" />
 
     <include
         file="$(find jsk_spot_startup)/launch/rviz.launch"
@@ -119,6 +121,53 @@
         args="compressedDepth in:=/spot/depth/right/image raw out:=/spot/depth/right/image"
         if="$(arg use_decompress)"
         />
+
+<node pkg="nodelet" type="nodelet" name="point_cloud_right"
+        args="load depth_image_proc/point_cloud_xyz $(arg manager)" output="screen" >
+    <remap from="camera_info" to="/spot/depth/right/camera_info" />
+    <remap from="image_rect" to="/spot/depth/right/image" />
+    <remap from="points" to="/spot/right/points" />
+    <rosparam>
+      queue_size: 100
+    </rosparam>
+</node>
+
+<node pkg="nodelet" type="nodelet" name="point_cloud_left"
+        args="load depth_image_proc/point_cloud_xyz $(arg manager)" output="screen" >
+    <remap from="camera_info" to="/spot/depth/left/camera_info" />
+    <remap from="image_rect" to="/spot/depth/left/image" />
+    <remap from="points" to="/spot/left/points" />
+    <rosparam>
+      queue_size: 100
+    </rosparam>
+</node>
+<node pkg="nodelet" type="nodelet" name="point_cloud_back"
+        args="load depth_image_proc/point_cloud_xyz $(arg manager)" output="screen" >
+    <remap from="camera_info" to="/spot/depth/back/camera_info" />
+    <remap from="image_rect" to="/spot/depth/back/image" />
+    <remap from="points" to="/spot/back/points" />
+    <rosparam>
+      queue_size: 100
+    </rosparam>
+</node>
+<node pkg="nodelet" type="nodelet" name="point_cloud_frontleft"
+        args="load depth_image_proc/point_cloud_xyz $(arg manager)" output="screen" >
+    <remap from="camera_info" to="/spot/depth/frontleft/camera_info" />
+    <remap from="image_rect" to="/spot/depth/frontleft/image" />
+    <remap from="points" to="/spot/frontleft/points" />
+    <rosparam>
+      queue_size: 100
+    </rosparam>
+</node>
+<node pkg="nodelet" type="nodelet" name="point_cloud_frontright"
+        args="load depth_image_proc/point_cloud_xyz $(arg manager)" output="screen" >
+    <remap from="camera_info" to="/spot/depth/frontright/camera_info" />
+    <remap from="image_rect" to="/spot/depth/frontright/image" />
+    <remap from="points" to="/spot/frontright/points" />
+    <rosparam>
+      queue_size: 100
+    </rosparam>
+</node>
 
     <!-- Create object detection visuzaliation image and comress it -->
     <node

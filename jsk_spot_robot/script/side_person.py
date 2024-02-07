@@ -151,6 +151,8 @@ class RelativeTfConverter:
         # 描画
         self.estimated_circle = pyglet.shapes.Circle(offset_x,offset_y,10, color=(0,255,0, 125), batch=batch)
         self.observed_circle = pyglet.shapes.Circle(offset_x, offset_y, 10, color=(255,0,0, 125), batch=batch)
+        self.target_circle = pyglet.shapes.Circle(offset_x, offset_y, 10, color=(0,0,255, 125), batch=batch)
+
         self.center_axis_x = pyglet.shapes.Line(offset_x, offset_y, offset_x+50, offset_y, color=(255, 0, 0), batch=batch)
         self.center_axis_y = pyglet.shapes.Line(offset_x, offset_y, offset_x, offset_y+50, color=(0, 255, 0), batch=batch)
         self.vel = pyglet.shapes.Line(offset_x, offset_y, offset_x, offset_y, color=(0,0,255), batch=batch)
@@ -166,6 +168,7 @@ class RelativeTfConverter:
 
     
     def callback(self, msg:BoundingBoxArray):
+        print("1")
         self.delta_t = time.time() - self.last_updated_time
         self.last_updated_time = time.time()
         # msgの座標系のid(原点が73B2から見て約-26m下にある)
@@ -173,9 +176,8 @@ class RelativeTfConverter:
         # 変換したい座標系のid(原点はspotのbody中心)
         target_id = "body"
         # from->targetへのtfの変換を表す変数
-        transform_to_body = self.tf_buffer.lookup_transform(target_id, from_id, rospy.Time(0), rospy.Duration(1.0))
-        transform_to_odom = self.tf_buffer.lookup_transform(from_id, target_id, rospy.Time(0), rospy.Duration(1.0))
-        
+        transform_to_body = self.tf_buffer.lookup_transform(target_id, from_id, rospy.Time(0), rospy.Duration(1))
+        transform_to_odom = self.tf_buffer.lookup_transform(from_id, target_id, rospy.Time(0), rospy.Duration(1))
         if len(msg.boxes) > 0:
             self.nearest_distance = 1e10
             self.updated = False
@@ -187,14 +189,13 @@ class RelativeTfConverter:
                 # distance from previous target
                 distance = ((pose_transformed.pose.position.x - self.nearest_pose_stamped_from_spot.pose.position.x)**2 + (pose_transformed.pose.position.y - self.nearest_pose_stamped_from_spot.pose.position.y)**2)**0.5
                 # print(f"id={i}, pos={pose_transformed.pose.position}")
-                if (distance < self.nearest_distance and pose_transformed.pose.position.x < 0 and abs(pose_transformed.pose.position.y) < 4):
+                if (distance < self.nearest_distance and pose_transformed.pose.position.x < 1 and abs(pose_transformed.pose.position.y) < 4):
                     # x座標が負かつy方向に4m以内の人で距離が最も近い人を追従対象にする
                     self.nearest_distance = distance
                     self.nearest_pose_stamped_from_spot= pose_transformed
                     self.nearest_pose_stamped_from_odom = pose_stamped
                     self.updated = True
 
-            
             if self.updated:
                 # alpha = (self.nearest_distance-1)/self.nearest_distance
                 if not self.kalman_filter.is_state_initialized:
@@ -206,44 +207,94 @@ class RelativeTfConverter:
                     self.kalman_filter.update(self.nearest_pose_stamped_from_odom.pose.position.x, self.nearest_pose_stamped_from_odom.pose.position.y, float(self.nearest_pose_stamped_from_odom.pose.position.x - self.kalman_filter.state[0])/self.delta_t, float(self.nearest_pose_stamped_from_odom.pose.position.y - self.kalman_filter.state[1])/self.delta_t)
                     pass
 
-                # 目指すべき場所
-                dest_pos_from_odom = PoseStamped()
-                dest_pos_from_odom.header = self.nearest_pose_stamped_from_odom.header
-                dest_pos_from_odom.pose.position.x = self.kalman_filter.state[0]
-                dest_pos_from_odom.pose.position.y = self.kalman_filter.state[1]
+                # convert frame from odom to spot
+                est_pos_from_odom = PoseStamped()
+                est_pos_from_odom.header = self.nearest_pose_stamped_from_odom.header
+                est_pos_from_odom.pose.position.x = self.kalman_filter.state[0]
+                est_pos_from_odom.pose.position.y = self.kalman_filter.state[1]
+                self.pre_est_pos_from_odom = est_pos_from_odom
 
 
-                vel_from_odom = PoseStamped()
-                vel_from_odom.header = self.nearest_pose_stamped_from_odom.header
+                est_vel_from_odom = PoseStamped()
+                est_vel_from_odom.header = self.nearest_pose_stamped_from_odom.header
                 # vel_from_odom.pose.position.x = (dest_pos_from_odom.pose.position.x - self.pre_dest_pos_from_odom.pose.position.x)/self.delta_t + transform_to_odom.transform.translation.x
                 # vel_from_odom.pose.position.y = (dest_pos_from_odom.pose.position.y - self.pre_dest_pos_from_odom.pose.position.y)/self.delta_t + transform_to_odom.transform.translation.y
-                vel_from_odom.pose.position.x = self.kalman_filter.state[2]+ transform_to_odom.transform.translation.x
-                vel_from_odom.pose.position.y = self.kalman_filter.state[3]+ transform_to_odom.transform.translation.y
-                self.pre_dest_pos_from_odom = dest_pos_from_odom
+                est_vel_from_odom.pose.position.x = self.kalman_filter.state[2]+ transform_to_odom.transform.translation.x
+                est_vel_from_odom.pose.position.y = self.kalman_filter.state[3]+ transform_to_odom.transform.translation.y
 
                 # odom視点のものをspot(body)視点にする
-                self.dest_pos_from_spot = tf2_geometry_msgs.do_transform_pose(dest_pos_from_odom, transform_to_body)
-                vel_from_spot = tf2_geometry_msgs.do_transform_pose(vel_from_odom, transform_to_body)
+                est_pos_from_spot = tf2_geometry_msgs.do_transform_pose(est_pos_from_odom, transform_to_body)
+                est_vel_from_spot = tf2_geometry_msgs.do_transform_pose(est_vel_from_odom, transform_to_body)
+
+                # 目指すべき場所
+                # self.nearest_pose_stamped_from_spot & self.est_vel_from_spot -> dest_pos_from_spot
+                dest_pos_from_spot = PoseStamped()
+                nearest_x = est_pos_from_spot.pose.position.x
+                nearest_y = est_pos_from_spot.pose.position.y
+
+                nearest_vx = est_vel_from_spot.pose.position.x
+                nearest_vy = est_vel_from_spot.pose.position.y
+
+                nearest_distance = (nearest_x**2 + nearest_y**2) ** 0.5
+                abs_nearest_v = (nearest_vx**2 + nearest_vy**2)**0.5
+
+                dest_pos_array = ([0,0], [0,0])
+
+                l = 1.5
+                print("4")
+
+                if (abs_nearest_v > 1e-3):
+                    dir_x = (-nearest_vy)/abs_nearest_v
+                    dir_y = (nearest_vx)/abs_nearest_v
+
+                    dest_pos_array[0][0] = nearest_x + dir_x*l
+                    dest_pos_array[0][1] = nearest_y + dir_y*l
+                    dest_pos_array[1][0] = nearest_x - dir_x*l
+                    dest_pos_array[1][1] = nearest_y - dir_y*l
+                else:
+                    phi = np.arctan2(nearest_y, nearest_x)
+                    theta = np.arccos(l/nearest_distance)
+                    dir_x1 = np.cos(phi-(np.pi-theta))
+                    dir_y1 = np.sin(phi-(np.pi-theta))
+                    dir_x2 = np.cos(phi+(np.pi-theta))
+                    dir_y2 = np.sin(phi+(np.pi-theta))
+
+                    dest_pos_array[0][0] = nearest_x+dir_x1*l
+                    dest_pos_array[0][1] = nearest_y+dir_y1*l
+                    dest_pos_array[1][0] = nearest_x+dir_x2*l
+                    dest_pos_array[1][1] = nearest_y+dir_y2*l
+                print("5")
+
+                
+                d1 = dest_pos_array[0][0]**2 + dest_pos_array[0][1]**2
+                d2 = dest_pos_array[1][0]**2 + dest_pos_array[1][1]**2
 
 
                 self.send_pose_array:PoseArray = PoseArray()
                 pos = Pose()
-                pos.position.x = self.dest_pos_from_spot.pose.position.x
-                pos.position.y = self.dest_pos_from_spot.pose.position.y
+                if (d1 > d2):
+                    # from 2 candidate, select closer pos as dest_pos
+                    pos.position.x = dest_pos_array[1][0]
+                    pos.position.y = dest_pos_array[1][1]
+                else:
+                    pos.position.x = dest_pos_array[0][0]
+                    pos.position.y = dest_pos_array[0][1]
+
                 vel = Pose()
-                vel.position.x = vel_from_spot.pose.position.x
-                vel.position.y = vel_from_spot.pose.position.y
+                vel.position.x = est_vel_from_spot.pose.position.x
+                vel.position.y = est_vel_from_spot.pose.position.y
 
                 self.send_pose_array.poses.append(pos)
                 self.send_pose_array.poses.append(vel)
 
-                self.pub1.publish(self.send_pose_array)
+                # /dest_pos_vel
+                # self.pub1.publish(self.send_pose_array)
 
-                print("==dest_pos==")
-                print(self.dest_pos_from_spot.pose.position)
+                print("==est_pos==")
+                print(est_pos_from_spot.pose.position)
 
 
-                self.pub2.publish(self.dest_pos_from_spot)
+                # self.pub2.publish(self.dest_pos_from_spot)
 
                 # 認識した人の位置をtfにpublishする
                 position = self.nearest_pose_stamped_from_spot.pose.position
@@ -264,14 +315,16 @@ class RelativeTfConverter:
                 #描画用の情報セット
                 self.observed_circle.x = self.nearest_pose_stamped_from_spot.pose.position.x*self.viz_scale + offset_x
                 self.observed_circle.y = self.nearest_pose_stamped_from_spot.pose.position.y*self.viz_scale + offset_y
-                self.estimated_circle.x = self.dest_pos_from_spot.pose.position.x*self.viz_scale+offset_x
-                self.estimated_circle.y = self.dest_pos_from_spot.pose.position.y*self.viz_scale+offset_y
+                self.estimated_circle.x = est_pos_from_spot.pose.position.x*self.viz_scale+offset_x
+                self.estimated_circle.y = est_pos_from_spot.pose.position.y*self.viz_scale+offset_y
+                self.target_circle.x = pos.position.x*self.viz_scale+offset_x
+                self.target_circle.y = pos.position.y*self.viz_scale+offset_y
                 self.estimated_circle.radius = (min(self.kalman_filter.cov[0,0], self.kalman_filter.cov[1,1])**0.5)*self.viz_scale
 
-                self.vel.x = self.dest_pos_from_spot.pose.position.x*self.viz_scale+offset_x
-                self.vel.y = self.dest_pos_from_spot.pose.position.y*self.viz_scale+offset_y
-                self.vel.x2 = self.vel.x + vel_from_spot.pose.position.x*self.viz_scale
-                self.vel.y2 = self.vel.y + vel_from_spot.pose.position.y*self.viz_scale
+                self.vel.x = est_pos_from_spot.pose.position.x*self.viz_scale+offset_x
+                self.vel.y = est_pos_from_spot.pose.position.y*self.viz_scale+offset_y
+                self.vel.x2 = self.vel.x + est_vel_from_spot.pose.position.x*self.viz_scale
+                self.vel.y2 = self.vel.y + est_vel_from_spot.pose.position.y*self.viz_scale
 
                 # 指定した周期で回るはず
                 self.rate.sleep()
